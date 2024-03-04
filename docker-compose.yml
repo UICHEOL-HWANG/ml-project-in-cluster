@@ -1,0 +1,183 @@
+version: '3.8'
+
+services:
+  # 메인 수집 db
+  db:
+    image: postgres:latest
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - ./database/.env.prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+      interval: 1m30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "5432:5432"
+
+
+  # 데이터수집 
+  data_generator:
+    build:
+      context: ./database
+      dockerfile: Dockerfile
+    container_name: data_generator
+
+    env_file:
+      - ./database/.env.prod
+    depends_on:
+      db:
+        condition: service_healthy
+
+
+# MLflow 및  MiniO 
+
+#MLflow 
+  mlflow-backend-store:
+    image: postgres:14.0
+    container_name: mlflow-backend-store 
+    volumes:
+      - mlflow-data:/var/lib/postgresql/data
+    env_file:
+      - ./model/.env.models
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+      interval: 1m30s
+      timeout: 30s
+      retries: 5
+    ports:
+      - "5433:5432"
+
+
+  mlflow-artifact-store:
+    image: minio/minio:RELEASE.2024-01-18T22-51-28Z
+    container_name: mlflow-artifact-store
+    ports:
+      - 9000:9000
+      - 9001:9001
+    env_file:
+      - ./model/.env.models
+    command: server /data/minio --console-address :9001
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+
+  
+  mlflow-server:
+    build:
+      context: ./model
+      dockerfile: Dockerfile
+    container_name: mlflow-server
+    depends_on:
+      - mlflow-backend-store
+      - mlflow-artifact-store
+    ports:
+      - "5001:5000"
+    env_file:
+      - ./model/.env.models
+    # 보안상 계정 테스트는 sh 스크립트로 이동
+    entrypoint: /usr/src/app/entrypoint.sh  
+
+
+# API serve 
+
+  api-with-model:
+    build:
+      context: ./model_serving
+      dockerfile: Dockerfile
+    container_name: api-with-model
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD 
+        - curl -X POST http://localhost:8000/predict
+        - -H 
+        - "Content-Type: application/json"
+        - -d 
+        - '{"death_rate": 10.6, "natural_increase_rate": -3.8, "marrige_rate": 3.9, "divorce_rate": 2.1, "year": 18, "month": 2, "region_busan": 0, "region_chungcheongbuk_do": 0, "region_chungcheongnam_do": 0, "region_daegu": 0, "region_daejeon": 0, "region_gangwon_do": 0, "region_gwangju": 0, "region_gyeonggi_do": 0, "region_gyeongsangbuk_do": 0, "region_gyeongsangnam_do": 0, "region_incheon": 0, "region_jeju": 1, "region_jeollabuk_do": 0, "region_jeollanam_do": 0, "region_sejong": 0, "region_seoul": 0, "region_ulsan": 0, "id": 183}'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# kafka in broker
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    env_file:
+      - ./kafka/.env.zookeeper
+  broker:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: broker 
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    env_file:
+      - ./kafka/.env.broker
+  
+# kafka in Schema Registry
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.3.0
+    container_name: schema-registry
+    depends_on:
+      - broker 
+    ports:
+      - "8081:8081"
+    env_file:
+      - ./connect/.env.schemas
+
+#kafka in connect 
+  connect:
+    build:
+      context: ./connect
+      dockerfile: Dockerfile
+    depends_on:
+      - broker
+      - schema-registry
+    ports:
+      - "8083:8083"
+    env_file:
+      - ./connect/.env.connect
+
+
+# kafka in sink connector 
+  target_postgres-server:
+    image: postgres:14.0 
+    container_name: target-postgres-server
+    ports:
+      - "5434:5432"
+    env_file:
+      - ./sink_connect/.env.target
+    healthcheck:
+      test: ["CMD", "pg_isready", "-q", "-U", "targetuser", "-d", "targetdatabase"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  table-creator:
+    build: 
+      context: ./sink_connect
+      dockerfile: Dockerfile
+    depends_on:
+        target_postgres-server:
+          condition: service_healthy
+
+  data-subscriber:
+    build:
+      context: ./stream_serving
+      dockerfile: Dockerfile
+    container_name: data-subscriber
+
+volumes:
+  postgres_data:
+  mlflow-data:

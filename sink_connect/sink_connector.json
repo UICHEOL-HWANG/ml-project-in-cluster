@@ -1,0 +1,14 @@
+{
+    "name": "postgres-sink-connector",
+    "config": {
+        "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+        "connection.url": "jdbc:postgresql://target-postgres-server:5432/targetdatabase",
+        "connection.user": "targetuser",
+        "connection.password": "targetpassword",
+        "table.name.format": "vital_statistics",
+        "topics": "postgres-source-vital_statistics",
+        "auto.create": false,
+        "auto.evolve": false,
+        "tasks.max": 2
+    }
+}
