@@ -7,3 +7,4 @@
 ![로직](./image/pipeline.png)
 
 - 공공데이터를 기반으로 설계함
+- 서버 링크 : https://github.com/UICHEOL-HWANG/ML-project.git
